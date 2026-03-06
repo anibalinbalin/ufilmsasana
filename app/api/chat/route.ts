@@ -2,30 +2,11 @@ import { google } from "@ai-sdk/google";
 import { streamText, convertToModelMessages, stepCountIs } from "ai";
 import { getAsanaMcpClient, closeMcpClient } from "@/lib/mcp";
 import { SYSTEM_PROMPT } from "@/lib/system-prompt";
-import { saveMessage, createChat, listChats } from "@/lib/db";
 
 export const maxDuration = 60;
 
 export async function POST(req: Request) {
-  const { messages, chatId } = await req.json();
-
-  // Save user message
-  const lastMsg = messages[messages.length - 1];
-  if (chatId && lastMsg?.role === "user") {
-    const existingChats = listChats().map((c) => c.id);
-    if (!existingChats.includes(chatId)) {
-      const title =
-        lastMsg.parts
-          ?.find((p: { type: string }) => p.type === "text")
-          ?.text?.slice(0, 50) || "Nuevo chat";
-      createChat(chatId, title);
-    }
-    const content =
-      lastMsg.parts
-        ?.find((p: { type: string }) => p.type === "text")
-        ?.text || "";
-    saveMessage(lastMsg.id, chatId, "user", content);
-  }
+  const { messages } = await req.json();
 
   let mcpClient;
   try {
@@ -46,10 +27,7 @@ export async function POST(req: Request) {
     messages: await convertToModelMessages(messages),
     tools,
     stopWhen: stepCountIs(10),
-    onFinish: async ({ text }) => {
-      if (chatId && text) {
-        saveMessage(`assistant-${Date.now()}`, chatId, "assistant", text);
-      }
+    onFinish: async () => {
       await closeMcpClient();
     },
     onError: async () => {
