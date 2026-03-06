@@ -1,19 +1,8 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { join } from "path";
 import crypto from "crypto";
+import { cookies } from "next/headers";
 
-const IS_VERCEL = !!process.env.VERCEL;
-const DATA_DIR = IS_VERCEL ? "/tmp" : join(process.cwd(), "data");
-const TOKEN_FILE = join(DATA_DIR, "tokens.json");
-
-if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-
-function getRedirectUri(): string {
-  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
-    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}/api/auth/callback`;
-  }
-  return "http://localhost:3000/api/auth/callback";
-}
+const COOKIE_NAME = "asana_tokens";
+const ENCRYPTION_KEY = process.env.ASANA_CLIENT_SECRET!.padEnd(32, "0").slice(0, 32);
 
 interface TokenData {
   access_token: string;
@@ -21,17 +10,50 @@ interface TokenData {
   expires_at: number;
 }
 
-export function getStoredTokens(): TokenData | null {
-  if (!existsSync(TOKEN_FILE)) return null;
+function encrypt(text: string): string {
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv("aes-256-cbc", ENCRYPTION_KEY, iv);
+  let encrypted = cipher.update(text, "utf8", "hex");
+  encrypted += cipher.final("hex");
+  return iv.toString("hex") + ":" + encrypted;
+}
+
+function decrypt(text: string): string {
+  const [ivHex, encrypted] = text.split(":");
+  const iv = Buffer.from(ivHex, "hex");
+  const decipher = crypto.createDecipheriv("aes-256-cbc", ENCRYPTION_KEY, iv);
+  let decrypted = decipher.update(encrypted, "hex", "utf8");
+  decrypted += decipher.final("utf8");
+  return decrypted;
+}
+
+export async function getStoredTokens(): Promise<TokenData | null> {
+  const cookieStore = await cookies();
+  const cookie = cookieStore.get(COOKIE_NAME);
+  if (!cookie) return null;
   try {
-    return JSON.parse(readFileSync(TOKEN_FILE, "utf-8"));
+    return JSON.parse(decrypt(cookie.value));
   } catch {
     return null;
   }
 }
 
-export function storeTokens(data: TokenData) {
-  writeFileSync(TOKEN_FILE, JSON.stringify(data, null, 2));
+export async function storeTokens(data: TokenData) {
+  const cookieStore = await cookies();
+  cookieStore.set(COOKIE_NAME, encrypt(JSON.stringify(data)), {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365, // 1 year (refresh token lasts long)
+  });
+}
+
+function getRedirectUri(): string {
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}/api/auth/callback`;
+  }
+  return "http://localhost:3000/api/auth/callback";
 }
 
 export function generateState(): string {
@@ -73,12 +95,12 @@ export async function exchangeCode(code: string): Promise<TokenData> {
     refresh_token: data.refresh_token,
     expires_at: Date.now() + data.expires_in * 1000 - 300000,
   };
-  storeTokens(tokens);
+  await storeTokens(tokens);
   return tokens;
 }
 
 export async function getAccessToken(): Promise<string> {
-  const tokens = getStoredTokens();
+  const tokens = await getStoredTokens();
   if (!tokens) {
     throw new Error("NOT_AUTHENTICATED");
   }
@@ -109,10 +131,10 @@ export async function getAccessToken(): Promise<string> {
     refresh_token: data.refresh_token || tokens.refresh_token,
     expires_at: Date.now() + data.expires_in * 1000 - 300000,
   };
-  storeTokens(newTokens);
+  await storeTokens(newTokens);
   return newTokens.access_token;
 }
 
-export function isAuthenticated(): boolean {
-  return getStoredTokens() !== null;
+export async function isAuthenticated(): Promise<boolean> {
+  return (await getStoredTokens()) !== null;
 }

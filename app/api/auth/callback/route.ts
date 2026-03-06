@@ -3,7 +3,6 @@ import { exchangeCode } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get("code");
-  const state = req.nextUrl.searchParams.get("state");
 
   if (!code) {
     return NextResponse.json({ error: "No code provided" }, { status: 400 });
