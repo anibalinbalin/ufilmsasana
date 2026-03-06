@@ -1,27 +1,31 @@
-import Database from "better-sqlite3";
 import { join } from "path";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 
-const DATA_DIR = join(process.cwd(), "data");
+// On Vercel (serverless), we use a simple JSON file in /tmp
+// Locally, we use /data directory
+const IS_VERCEL = !!process.env.VERCEL;
+const DATA_DIR = IS_VERCEL ? "/tmp" : join(process.cwd(), "data");
+const DB_FILE = join(DATA_DIR, "chats.json");
+
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
-const db = new Database(join(DATA_DIR, "chat.db"));
-db.pragma("journal_mode = WAL");
+interface ChatData {
+  chats: ChatSummary[];
+  messages: StoredMessage[];
+}
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS chats (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE TABLE IF NOT EXISTS messages (
-    id TEXT PRIMARY KEY,
-    chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-`);
+function readDb(): ChatData {
+  if (!existsSync(DB_FILE)) return { chats: [], messages: [] };
+  try {
+    return JSON.parse(readFileSync(DB_FILE, "utf-8"));
+  } catch {
+    return { chats: [], messages: [] };
+  }
+}
+
+function writeDb(data: ChatData) {
+  writeFileSync(DB_FILE, JSON.stringify(data));
+}
 
 export interface ChatSummary {
   id: string;
@@ -30,17 +34,23 @@ export interface ChatSummary {
 }
 
 export function listChats(): ChatSummary[] {
-  return db
-    .prepare("SELECT id, title, created_at FROM chats ORDER BY created_at DESC")
-    .all() as ChatSummary[];
+  return readDb().chats.sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
 }
 
 export function createChat(id: string, title: string) {
-  db.prepare("INSERT INTO chats (id, title) VALUES (?, ?)").run(id, title);
+  const db = readDb();
+  if (db.chats.find((c) => c.id === id)) return;
+  db.chats.push({ id, title, created_at: new Date().toISOString() });
+  writeDb(db);
 }
 
 export function deleteChat(id: string) {
-  db.prepare("DELETE FROM chats WHERE id = ?").run(id);
+  const db = readDb();
+  db.chats = db.chats.filter((c) => c.id !== id);
+  db.messages = db.messages.filter((m) => m.chat_id !== id);
+  writeDb(db);
 }
 
 export interface StoredMessage {
@@ -52,11 +62,12 @@ export interface StoredMessage {
 }
 
 export function getMessages(chatId: string): StoredMessage[] {
-  return db
-    .prepare(
-      "SELECT id, chat_id, role, content, created_at FROM messages WHERE chat_id = ? ORDER BY created_at ASC"
-    )
-    .all(chatId) as StoredMessage[];
+  return readDb()
+    .messages.filter((m) => m.chat_id === chatId)
+    .sort(
+      (a, b) =>
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    );
 }
 
 export function saveMessage(
@@ -65,11 +76,26 @@ export function saveMessage(
   role: string,
   content: string
 ) {
-  db.prepare(
-    "INSERT OR REPLACE INTO messages (id, chat_id, role, content) VALUES (?, ?, ?, ?)"
-  ).run(id, chatId, role, content);
+  const db = readDb();
+  const existing = db.messages.findIndex((m) => m.id === id);
+  const msg: StoredMessage = {
+    id,
+    chat_id: chatId,
+    role,
+    content,
+    created_at: new Date().toISOString(),
+  };
+  if (existing >= 0) {
+    db.messages[existing] = msg;
+  } else {
+    db.messages.push(msg);
+  }
+  writeDb(db);
 }
 
 export function updateChatTitle(id: string, title: string) {
-  db.prepare("UPDATE chats SET title = ? WHERE id = ?").run(title, id);
+  const db = readDb();
+  const chat = db.chats.find((c) => c.id === id);
+  if (chat) chat.title = title;
+  writeDb(db);
 }

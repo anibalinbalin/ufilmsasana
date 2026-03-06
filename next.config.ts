@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["@ai-sdk/mcp", "better-sqlite3"],
+  serverExternalPackages: ["@ai-sdk/mcp"],
 };
 
 export default nextConfig;
