@@ -1,21 +1,24 @@
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import crypto from "crypto";
 
-const TOKEN_FILE = join(process.cwd(), "data", "tokens.json");
+const IS_VERCEL = !!process.env.VERCEL;
+const DATA_DIR = IS_VERCEL ? "/tmp" : join(process.cwd(), "data");
+const TOKEN_FILE = join(DATA_DIR, "tokens.json");
+
+if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+
+function getRedirectUri(): string {
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}/api/auth/callback`;
+  }
+  return "http://localhost:3000/api/auth/callback";
+}
 
 interface TokenData {
   access_token: string;
   refresh_token: string;
   expires_at: number;
-}
-
-function ensureDataDir() {
-  const dir = join(process.cwd(), "data");
-  if (!existsSync(dir)) {
-    const { mkdirSync } = require("fs");
-    mkdirSync(dir, { recursive: true });
-  }
 }
 
 export function getStoredTokens(): TokenData | null {
@@ -28,7 +31,6 @@ export function getStoredTokens(): TokenData | null {
 }
 
 export function storeTokens(data: TokenData) {
-  ensureDataDir();
   writeFileSync(TOKEN_FILE, JSON.stringify(data, null, 2));
 }
 
@@ -39,7 +41,7 @@ export function generateState(): string {
 export function getAuthUrl(state: string): string {
   const params = new URLSearchParams({
     client_id: process.env.ASANA_CLIENT_ID!,
-    redirect_uri: `http://localhost:3000/api/auth/callback`,
+    redirect_uri: getRedirectUri(),
     response_type: "code",
     state,
     scope: "default",
@@ -55,7 +57,7 @@ export async function exchangeCode(code: string): Promise<TokenData> {
       grant_type: "authorization_code",
       client_id: process.env.ASANA_CLIENT_ID!,
       client_secret: process.env.ASANA_CLIENT_SECRET!,
-      redirect_uri: "http://localhost:3000/api/auth/callback",
+      redirect_uri: getRedirectUri(),
       code,
     }).toString(),
   });
@@ -69,7 +71,7 @@ export async function exchangeCode(code: string): Promise<TokenData> {
   const tokens: TokenData = {
     access_token: data.access_token,
     refresh_token: data.refresh_token,
-    expires_at: Date.now() + data.expires_in * 1000 - 300000, // 5min buffer
+    expires_at: Date.now() + data.expires_in * 1000 - 300000,
   };
   storeTokens(tokens);
   return tokens;
@@ -85,7 +87,6 @@ export async function getAccessToken(): Promise<string> {
     return tokens.access_token;
   }
 
-  // Refresh
   const res = await fetch("https://app.asana.com/-/oauth_token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
